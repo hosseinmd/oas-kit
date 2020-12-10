@@ -7,6 +7,7 @@ const url = require('url');
 const yaml = require('yaml');
 const should = require('should/as-function');
 const maybe = require('call-me-maybe');
+const semver = require('semver');
 
 const common = require('oas-kit-common');
 const jptr = require('reftools/lib/jptr.js');
@@ -20,6 +21,7 @@ const resolver = require('oas-resolver');
 
 const dummySchema = { anyOf: {} };
 const emptySchema = {};
+let ver31 = false;
 let refSeen = {};
 
 function contextAppend(options, s) {
@@ -406,7 +408,10 @@ function checkServer(server, options) {
             if (typeof server.variables[v].enum !== 'undefined') {
                 contextAppend(options, 'enum');
                 should(server.variables[v].enum).be.an.Array();
-                should(server.variables[v].enum.length).not.be.exactly(0, 'Server variables enum should not be empty');
+                if (ver31) {
+                  should(server.variables[v].enum.length).not.be.exactly(0, 'Server variables enum MUST NOT be empty');
+                  should(server.variables[v].enum.indexOf(server.variables[v].default)).be.greaterThan(-1,'server variables enum MUST contain default');
+                }
                 for (let e in server.variables[v].enum) {
                     contextAppend(options, e);
                     should(server.variables[v].enum[e]).be.type('string');
@@ -750,13 +755,16 @@ function checkPathItem(pathItem, path, openapi, options) {
             should(op).not.have.property('consumes');
             should(op).not.have.property('produces');
             should(op).not.have.property('schemes');
-            should(op).have.property('responses');
-            contextAppend(options, 'responses');
-            should(op.responses).not.be.undefined();
-            should(op.responses).be.an.Object();
-            should(op.responses).not.be.an.Array();
-            should(op.responses).not.be.empty();
-            options.context.pop();
+            if (!ver31) {
+              should(op).have.property('responses');
+            }
+            if (typeof op.responses !== 'undefined') {
+              contextAppend(options, 'responses');
+              should(op.responses).be.an.Object();
+              should(op.responses).not.be.an.Array();
+              should(op.responses).not.be.empty();
+              options.context.pop();
+            }
             if (typeof op.summary !== 'undefined') should(op.summary).have.type('string');
             if (typeof op.description !== 'undefined') should(op.description).be.a.String();
             if (typeof op.operationId !== 'undefined') {
@@ -932,12 +940,22 @@ function validateInner(openapi, options, callback) {
     should(openapi).not.have.key('swagger');
     should(openapi).have.key('openapi');
     should(openapi.openapi).have.type('string');
-    should.ok(openapi.openapi.startsWith('3.0.'), 'Must be an OpenAPI 3.0.x document');
+    should.ok(semver.satisfies(semver.coerce(openapi.openapi),'3.x < 3.2'), 'Must be an OpenAPI 3.0/3.1 document');
+    ver31 = semver.satisfies(openapi.openapi,'3.1.x');
     should(openapi).not.have.key('host');
     should(openapi).not.have.key('basePath');
     should(openapi).not.have.key('schemes');
-    should(openapi).have.key('paths');
-    should(openapi.paths).be.an.Object();
+    let containers = ['paths'];
+    if (ver31) containers = containers.concat(['webhooks','components']);
+    let count = 0;
+    for (let container of containers) {
+      if (typeof openapi[container] !== 'undefined') {
+        count++;
+        should(openapi[container]).be.an.Object();
+        should(openapi[container]).not.be.an.Array();
+      }
+    }
+    should.ok(count>=1,'Must have one top-level container: '+containers);
     should(openapi).not.have.key('definitions');
     should(openapi).not.have.key('parameters');
     should(openapi).not.have.key('responses');
@@ -947,7 +965,9 @@ function validateInner(openapi, options, callback) {
 
     for (let k in openapi) {
         if (!k.startsWith('x-')) {
-            should(['openapi','info','servers','security','externalDocs','tags','paths','components'].indexOf(k)).be.greaterThan(-1,'OpenAPI object cannot have additionalProperty: '+k);
+            let props = ['openapi','info','servers','security','externalDocs','tags','paths','components'];
+            if (ver31) props.push('webhooks');
+            should(props.indexOf(k)).be.greaterThan(-1,'OpenAPI object cannot have additionalProperty: '+k);
         }
     }
 
@@ -976,6 +996,13 @@ function validateInner(openapi, options, callback) {
         if (typeof openapi.info.license.url !== 'undefined') {
             should.doesNotThrow(function () { validateUrl(openapi.info.license.url, contextServers, 'license.url', options) },'Invalid license.url');
         }
+        for (let k in openapi.info.license) {
+          if (!k.startsWith('x-')) {
+              let props = ['name','url'];
+              if (ver31) props.push('identifier');
+              should(props.indexOf(k)).be.greaterThan(-1,'license object cannot have additionalProperty: '+k);
+          }
+        }
         if (options.lint) options.linter('license',openapi.info.license,'license',options);
         options.context.pop();
     }
@@ -1001,13 +1028,20 @@ function validateInner(openapi, options, callback) {
         if (options.lint) options.linter('contact',openapi.info.contact,'contact',options);
         for (let k in openapi.info.contact) {
             if (!k.startsWith('x-')) {
-                should(['name','url','email'].indexOf(k)).be.greaterThan(-1,'info object cannot have additionalProperty: '+k);
+                should(['name','url','email'].indexOf(k)).be.greaterThan(-1,'contact object cannot have additionalProperty: '+k);
             }
         }
         options.context.pop();
     }
     if (typeof openapi.info.description !== 'undefined') {
         should(openapi.info.description).be.a.String();
+    }
+    for (let k in openapi.info) {
+        if (!k.startsWith('x-')) {
+            let props = ['version','title','description','license','contact','termsOfService'];
+            if (ver31) props.push('summary');
+            should(props.indexOf(k)).be.greaterThan(-1,'info object cannot have additionalProperty: '+k);
+        }
     }
     if (options.lint) options.linter('info',openapi.info,'info',options);
     options.context.pop();
@@ -1067,6 +1101,13 @@ function validateInner(openapi, options, callback) {
         options.context.push('#/components');
         should(openapi.components).be.an.Object();
         should(openapi.components).not.be.an.Array();
+        for (let k in openapi.components) {
+            if (!k.startsWith('x-')) {
+                let props = ['schemas','parameters','responses','headers','securitySchemes','requestBodies','examples','links','callbacks'];
+                if (ver31) props.push('pathItems');
+                should(props.indexOf(k)).be.greaterThan(-1,'components object cannot have additionalProperty: '+k);
+            }
+        }
         if (options.lint) options.linter('components',openapi.components,'components',options);
         options.context.pop();
     }
@@ -1224,6 +1265,19 @@ function validateInner(openapi, options, callback) {
         should(openapi.components.parameters).not.be.an.Array();
         for (let p in openapi.components.parameters) {
             checkParam(openapi.components.parameters[p], p, '', contextServers, openapi, options);
+            contextAppend(options, p);
+            should(validateComponentName(p)).be.equal(true, 'component name invalid');
+            options.context.pop();
+        }
+        options.context.pop();
+    }
+
+    if (openapi.components && (typeof openapi.components.pathItems !== 'undefined')) {
+        options.context.push('#/components/pathItems/');
+        should(openapi.components.pathItems).be.an.Object();
+        should(openapi.components.pathItems).not.be.an.Array();
+        for (let p in openapi.components.pathItems) {
+            checkPathItem(openapi.components.pathItems[p], p, openapi, options);
             contextAppend(options, p);
             should(validateComponentName(p)).be.equal(true, 'component name invalid');
             options.context.pop();
@@ -1427,7 +1481,7 @@ function validate(openapi, options, callback) {
 }
 
 function microValidate(openapi, options) {
-    return (openapi && openapi.openapi && openapi.info && (typeof openapi.info.version !== 'undefined') && (typeof openapi.info.title !== 'undefined') && openapi.paths);
+    return (openapi && openapi.openapi && openapi.info && (typeof openapi.info.version !== 'undefined') && (typeof openapi.info.title !== 'undefined') && openapi.paths); // 3.0
 }
 
 function optionallyValidate(openapi, options) {

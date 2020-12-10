@@ -8,6 +8,7 @@ const pathlib = require('path');
 const maybe = require('call-me-maybe');
 const fetch = require('node-fetch-h2');
 const yaml = require('yaml');
+const semver = require('semver');
 
 const jptr = require('reftools/lib/jptr.js');
 const resolveInternal = jptr.jptr;
@@ -1349,14 +1350,20 @@ function fixInfo(openapi, options, reject) {
     }
 }
 
-function fixPaths(openapi, options, reject) {
-    if (typeof openapi.paths === 'undefined') {
+function fixContainers(openapi, options, reject) {
+    let count = 0;
+    if (typeof openapi.paths !== 'undefined') count++;
+    if (semver.satisfies(openapi.openapi,'3.1.x')) {
+      if (typeof openapi.components !== 'undefined') count++;
+      if (typeof openapi.webhooks !== 'undefined') count++;
+    }
+    if (count < 1) {
         if (options.patch) {
             options.patches++;
             openapi.paths = {};
         }
         else {
-            return reject(new S2OError('(Patchable) paths object is mandatory'));
+            return reject(new S2OError('(Patchable) paths object is mandatory')); // FIXME msg
         }
     }
 }
@@ -1398,10 +1405,10 @@ function convertObj(swagger, options, callback) {
 
         detectObjectReferences(swagger, options);
 
-        if (swagger.openapi && (typeof swagger.openapi === 'string') && swagger.openapi.startsWith('3.')) {
+        if (swagger.openapi && (typeof swagger.openapi === 'string') && semver.satisfies(semver.coerce(swagger.openapi),'3.x < 3.2')) {
             options.openapi = cclone(swagger);
             fixInfo(options.openapi, options, reject);
-            fixPaths(options.openapi, options, reject);
+            fixContainers(options.openapi, options, reject);
 
             resolver.optionalResolve(options) // is a no-op if options.resolve is not set
             .then(function(){
@@ -1519,7 +1526,7 @@ function convertObj(swagger, options, callback) {
         }
 
         fixInfo(openapi, options, reject);
-        fixPaths(openapi, options, reject);
+        fixContainers(openapi, options, reject);
 
         if (typeof openapi.consumes === 'string') {
             openapi.consumes = [openapi.consumes];

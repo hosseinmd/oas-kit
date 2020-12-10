@@ -23,6 +23,7 @@
     "oas-resolver": "^2.5.3",
     "oas-schema-walker": "^1.1.5",
     "reftools": "^1.1.7",
+    "semver": "^7.3.4",
     "should": "^13.2.1",
     "yaml": "^1.10.0"
   },
